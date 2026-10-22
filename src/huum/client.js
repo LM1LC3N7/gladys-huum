@@ -144,7 +144,7 @@ export class HuumClient {
     this.now = now;
   }
 
-  async call(auth, method, path, { body, timeoutMs, startBy = Infinity }) {
+  async call(auth, method, path, { body, timeoutMs, startBy = Infinity, beforeSend }) {
     if (!auth) {
       throw Object.assign(new Error('No credentials'), { notSent: true });
     }
@@ -158,6 +158,7 @@ export class HuumClient {
       timeoutMs,
       startBy,
       now: this.now,
+      beforeSend,
     });
     if (response.status < 200 || response.status > 299) {
       throw statusError(response, this.now());
@@ -174,9 +175,10 @@ export class HuumClient {
    * Heats at `temperature` °C (also how a new setpoint is given), never
    * retried. Refused unsent when the temperature is not a whole number of
    * the controller's range, or (LATE) when the request could not be written
-   * by `startBy`.
+   * by `startBy`. `beforeSend` runs once connected, right before the first
+   * byte (the last checks of the app: option, turn off, deadline).
    */
-  async start(auth, temperature, { timeoutMs, startBy }) {
+  async start(auth, temperature, { timeoutMs, startBy, beforeSend }) {
     if (
       !Number.isInteger(temperature) ||
       temperature < TEMPERATURE.min ||
@@ -191,6 +193,7 @@ export class HuumClient {
       body: { targetTemperature: temperature },
       timeoutMs,
       startBy,
+      beforeSend,
     });
   }
 

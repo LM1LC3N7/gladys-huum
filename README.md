@@ -50,6 +50,15 @@ Gladys ⇄ SDK ⇄ src/handlers.js ⇄ src/app.js (HuumApp)
   by an answer showing the temperature asked; else "sent, without
   confirmation". The temperature never exceeds `max_temperature` (90 °C by
   default, 110 °C at most).
+- **Guards (review 1)**: a turn off is confirmed only by 232 or 400, otherwise
+  reaffirmed twice at most within 2 min. Every heating command is refused
+  while a turn off is in flight or unconfirmed, and checked once more
+  (`beforeSend`: option, turn off, deadline) at the moment its request is
+  written; the setpoint is refused near the end of the session and for 2 min
+  after a turn off.
+- **HTTPS**: one TLS connection per request (no `agent: false`: Node would
+  then ignore createConnection and send in clear), tested against a real
+  local TLS server (`test/tls.test.js`).
 
 ## Development
 

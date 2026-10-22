@@ -55,25 +55,35 @@ nouvel appareil ; l'ancien est montré injoignable.
   désactivé, pendant une pause demandée par Huum, après des identifiants
   refusés, ou juste après un redémarrage, avant la première lecture. Elle est
   toujours envoyée (jamais « déjà éteint »), annule une commande de chauffe
-  pas encore partie, est renvoyée après une chauffe encore en route, et
-  réaffirmée (deux fois au plus) si le sauna se remet à chauffer dans les deux
-  minutes.
+  pas encore partie, et est renvoyée après une chauffe encore en route.
+  Elle n'est confirmée que si la réponse de Huum montre le sauna « en ligne,
+  à l'arrêt » ou en « arrêt d'urgence » ; sinon (pas de réponse, erreur,
+  hors ligne, verrouillé, inconnu, encore en chauffe) : « Envoyée, sans
+  confirmation », et pendant deux minutes chaque lecture qui voit le sauna
+  chauffer la renvoie (deux fois au plus). Cela peut aussi éteindre une
+  chauffe lancée depuis l'application Huum dans ces deux minutes : c'est
+  voulu.
 - **Allumer (chauffer)** et la **consigne** sont refusés tant que
   « Autoriser le chauffage depuis Gladys » est désactivé. Activés, ils
   relisent d'abord le sauna (jamais l'état en mémoire) et refusent si la
   porte est ouverte ou inconnue, si le sauna ne peut pas chauffer (hors
   ligne, verrouillé par un autre compte, arrêt d'urgence, statut inconnu), si
-  une extinction a été demandée entre-temps, ou si la commande ne peut pas
-  partir dans les 3,5 s. Une seule à la fois, jamais renvoyée.
+  une extinction est en cours ou pas encore confirmée, ou si la commande ne
+  peut pas partir dans les 3,5 s. L'option et l'extinction sont revérifiées
+  au moment même où la commande s'écrit : désactiver l'option ou appuyer sur
+  Éteindre pendant la connexion annule l'envoi. Une seule à la fois, jamais
+  renvoyée.
 - **Allumer** demande la consigne du bouton « Allumer », jamais au-dessus de
   la consigne la plus haute. Déjà en chauffe : rien n'est envoyé.
 - **La consigne** ne se change que pendant la chauffe (chez Huum, une
   nouvelle consigne est envoyée comme un nouvel allumage). Un nombre entier
-  de 40 °C à la consigne la plus haute.
-- Une commande n'est confirmée que si la réponse de Huum montre le sauna en
-  chauffe à la température demandée (ou à l'arrêt pour l'extinction). Sinon :
-  « Envoyée, sans confirmation », et l'intégration relit le sauna 10 s et
-  40 s après.
+  de 40 °C à la consigne la plus haute. Elle est refusée si la fin de séance
+  est inconnue ou dans moins de 2 min (elle relancerait la chauffe), et
+  pendant 2 min après une extinction. Si Huum relance quand même une séance,
+  le journal le dit (« séance relancée jusqu'à HH:MM UTC »).
+- Allumer et la consigne ne sont confirmés que si la réponse de Huum montre
+  le sauna en chauffe à la température demandée. Sinon : « Envoyée, sans
+  confirmation », et l'intégration relit le sauna 10 s et 40 s après.
 
 ## Quand ça ne va pas
 
@@ -101,7 +111,10 @@ nouvel appareil ; l'ancien est montré injoignable.
 
 `/data/huum-state.json` contient seulement : la fin d'une pause, l'arrêt sur
 identifiants refusés (avec l'empreinte salée de ces identifiants), l'heure de
-la dernière lecture. Ni adresse e-mail ni mot de passe.
+la dernière lecture, et le résumé de la dernière bonne lecture (« En chauffe,
+72 °C », avec une empreinte salée du compte) : après un redémarrage,
+l'intégration s'affiche connectée jusqu'à la première lecture (2 h au plus).
+Ni adresse e-mail ni mot de passe.
 
 Basée sur la bibliothèque Python huum (MIT, frwickst/pyhuum), portée en
 JavaScript : voir `THIRD_PARTY_NOTICES.md`.

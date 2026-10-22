@@ -32,7 +32,10 @@ export async function settle(rounds = 20) {
 
 /**
  * The cloud. The test may set: `down` (nothing answers), `silent` (connected,
- * no answer), `connectDelay` (ms before the request is written), `delays` (ms,
+ * no answer), `connectDelay` / `connectDelays` (ms before the request is
+ * written, all / by command; `beforeSend` runs after it), `applyDelays` (ms,
+ * by command: the controller applies it late, the answer shows the state
+ * before), `delays` (ms,
  * by command, before the answer), `statuses` (HTTP status by command),
  * `retryAfter` (header of a 429), `applies` (false: commands change nothing),
  * `body` (raw status answer), `password` (the one accepted).
@@ -52,6 +55,8 @@ export function fakeCloud(over = {}) {
     down: false,
     silent: false,
     connectDelay: 0,
+    connectDelays: {},
+    applyDelays: {},
     delays: {},
     statuses: {},
     retryAfter: undefined,
@@ -61,20 +66,40 @@ export function fakeCloud(over = {}) {
     log: [],
     reads: () => server.log.filter((r) => r.command === 'status').length,
     commands: () => server.log.filter((r) => r.command !== 'status').map((r) => r.command),
-    async transport({ host, port, method, path, headers, body, timeoutMs, startBy, now }) {
+    async transport({
+      host,
+      port,
+      method,
+      path,
+      headers,
+      body,
+      timeoutMs,
+      startBy,
+      now,
+      beforeSend,
+    }) {
       const command = path.split('/').at(-1);
       if (server.down) {
         throw new HuumError(ERROR_KINDS.UNREACHABLE, 'Unreachable: ECONNREFUSED');
       }
-      if (server.connectDelay > 0) {
-        if (server.connectDelay >= timeoutMs) {
+      const connectDelay = server.connectDelays[command] ?? server.connectDelay;
+      if (connectDelay > 0) {
+        if (connectDelay >= timeoutMs) {
           await wait(timeoutMs);
           throw new HuumError(ERROR_KINDS.UNREACHABLE, 'Unreachable: timeout');
         }
-        await wait(server.connectDelay);
+        await wait(connectDelay);
       }
       if (now() > startBy) {
         throw new HuumError(ERROR_KINDS.LATE, 'Too late to send');
+      }
+      if (beforeSend) {
+        // As src/huum/http.js: a refusal there writes nothing.
+        try {
+          beforeSend();
+        } catch (err) {
+          throw Object.assign(err, { notSent: true });
+        }
       }
       server.log.push({
         host,
@@ -92,15 +117,25 @@ export function fakeCloud(over = {}) {
       }
       const authorized = headers.Authorization === basic(USER, server.password);
       const status = server.statuses[command] ?? (authorized ? 200 : 401);
-      if (status === 200) {
-        if (command === 'start' && server.applies) {
+      const before = { ...sauna };
+      const apply = () => {
+        if (command === 'start') {
           sauna.statusCode = 231;
           sauna.targetTemperature = String(JSON.parse(body).targetTemperature);
           sauna.startDate = Math.floor(now() / 1000);
           sauna.endDate = sauna.startDate + 3 * 3600;
-        } else if (command === 'stop' && server.applies) {
+        } else if (command === 'stop') {
           sauna.statusCode = 232;
           sauna.endDate = Math.floor(now() / 1000);
+        }
+      };
+      const lag = server.applyDelays[command];
+      if (status === 200 && server.applies && command !== 'status') {
+        if (lag > 0) {
+          // A controller late to apply: the answer shows the state before.
+          setTimeout(apply, lag);
+        } else {
+          apply();
         }
       }
       const delay = server.delays[command] ?? 0;
@@ -118,7 +153,7 @@ export function fakeCloud(over = {}) {
           server.retryAfter === undefined ? {} : { 'retry-after': String(server.retryAfter) },
         );
       }
-      return answer(200, server.body ?? { ...sauna });
+      return answer(200, server.body ?? (lag > 0 ? before : { ...sauna }));
     },
   };
   Object.assign(server, over, { sauna });

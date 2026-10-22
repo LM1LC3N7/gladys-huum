@@ -184,6 +184,7 @@ test('the setpoint: only while heating, bounded, decided on a fresh read', async
   assert.match(String(ack.error), /ne chauffe pas/);
   assert.deepEqual(ctx.server.commands(), []);
   ctx.sauna.statusCode = 231;
+  ctx.sauna.endDate = Math.floor(NOW / 1000) + 3600;
   for (const bad of [96, 39, 85.5, '', null, '85°', true]) {
     ack = await ctx.press('target-temperature', bad);
     assert.equal(ack.success, false, String(bad));

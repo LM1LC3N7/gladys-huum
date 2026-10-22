@@ -52,8 +52,11 @@ export class HuumError extends Error {
 /**
  * @param {{ host: string, port: number, method: string, path: string,
  *   headers?: object, body?: string, timeoutMs?: number, startBy?: number,
- *   now?: () => number, secure?: boolean }} options
- *   `secure: false` (plain TCP) is for the tests only.
+ *   now?: () => number, secure?: boolean, ca?: string, beforeSend?: () => void }} options
+ *   `secure: false` (plain TCP) and `ca` (a test authority) are for the tests only.
+ *   `beforeSend`: called once connected, right before the request is written;
+ *   when it throws, nothing is written and the promise rejects with its error
+ *   (marked `notSent`).
  * @returns {Promise<{ status: number, headers: object, body: string }>}
  */
 export function request({
@@ -67,13 +70,21 @@ export function request({
   startBy = Infinity,
   now = Date.now,
   secure = true,
+  ca,
+  beforeSend,
 }) {
   return new Promise((resolve, reject) => {
     let settled = false;
     let written = false;
     let req;
     const socket = secure
-      ? tlsConnect({ host, port, servername: host, ALPNProtocols: ['http/1.1'] })
+      ? tlsConnect({
+          host,
+          port,
+          servername: host,
+          ALPNProtocols: ['http/1.1'],
+          ...(ca ? { ca } : {}),
+        })
       : netConnect({ host, port });
     const finish = (fn, value) => {
       if (!settled) {
@@ -109,15 +120,29 @@ export function request({
         fail(ERROR_KINDS.LATE, 'Too late to send');
         return;
       }
+      if (beforeSend) {
+        // The last check of a command, right before its first byte: when it
+        // refuses, nothing is written and its own error is the answer.
+        try {
+          beforeSend();
+        } catch (err) {
+          socket.destroy();
+          finish(reject, Object.assign(err, { notSent: true }));
+          return;
+        }
+      }
       written = true;
       const payload = body === undefined ? undefined : Buffer.from(body, 'utf8');
+      // No `agent` option: with `agent: false` Node ignores createConnection
+      // and opens a second, PLAIN TCP connection (the request and its
+      // Authorization header in clear). Without it, the request goes on this
+      // TLS socket only (test/tls.test.js checks the wire).
       req = httpRequest(
         {
           host,
           port,
           method,
           path,
-          agent: false,
           createConnection: () => socket,
           headers: {
             Connection: 'close',

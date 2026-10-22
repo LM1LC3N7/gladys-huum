@@ -92,8 +92,21 @@ test('the memory read back from /data is bounded and repaired', () => {
   assert.deepEqual(normalizeMemory('garbage', now), {
     pause: null,
     block: null,
+    lastGood: null,
     lastAttemptAt: null,
   });
+  const good = normalizeMemory(
+    {
+      lastGood: {
+        salt: 'd'.repeat(32),
+        account: 'e'.repeat(32),
+        at: now + 999,
+        summary: { en: 'Heating\u0000', fr: 'En chauffe' },
+      },
+    },
+    now,
+  );
+  assert.equal(good.lastGood, null, 'a control character refuses it');
   assert.equal(normalizeMemory({ pause: { until: now - 1 } }, now).pause, null);
   assert.equal(normalizeMemory({ block: { salt: 'not hex' } }, now).block, null);
 });

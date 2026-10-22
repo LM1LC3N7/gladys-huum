@@ -20,14 +20,20 @@ the notes of the version's GitHub Release.
   reported).
 - "Turn off" button, never held back (option, heating command in flight,
   429/5xx pause, refused credentials, before the first read after a restart);
-  sent again after a heating command in flight, and reaffirmed if the sauna
-  heats again.
+  sent again after a heating command in flight; confirmed only when the
+  sauna answers "online, not heating" or "emergency stop", otherwise
+  reaffirmed (twice at most) by the reads of the next 2 min that see it heat.
 - "Turn on (heat)" button and writable setpoint, off by default ("Allow
   heating from Gladys"), decided on a fresh read, refused while the door is
-  open, checked again right before sending, refused after 3.5 s; the
-  temperature never above the "Highest setpoint" (90 °C by default, 110 °C
-  at most); "sent, without confirmation" when the answer does not show it.
+  open or a turn off is in flight or unconfirmed, the option and the turn off
+  checked again at the moment the command is written, refused after 3.5 s;
+  the temperature never above the "Highest setpoint" (90 °C by default,
+  110 °C at most); the setpoint refused near the end of the session and for
+  2 min after a turn off, a new session started by Huum logged; "sent,
+  without confirmation" when the answer does not show it.
 - Credentials refused: a stop kept in `/data`, never retried by itself; 429
   and 5xx pauses kept in `/data`; never read sooner than the interval, even
-  after a restart.
+  after a restart; the last good read shown after a restart.
+- Requests over HTTPS on one TLS connection, tested against a real local
+  TLS server.
 - "Test the connection" button; documentation in English and French.

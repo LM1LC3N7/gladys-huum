@@ -151,6 +151,23 @@ export const ERRORS = {
     'A turn off was asked meanwhile: nothing sent.',
     'Une extinction a été demandée entre-temps : rien envoyé.',
   ),
+  stopPending: both(
+    'A turn off is in flight or not confirmed yet: heating refused, nothing sent.',
+    'Une extinction est en cours ou pas encore confirmée : chauffe refusée, rien envoyé.',
+  ),
+  justStopped: both(
+    'A turn off was just asked: setpoint refused for 2 min, nothing sent.',
+    'Une extinction vient d’être demandée : consigne refusée pendant 2 min, rien envoyé.',
+  ),
+  sessionEnding: both(
+    'The session ends in less than 2 min: setpoint refused (it would start heating again), nothing sent.',
+    'La séance se termine dans moins de 2 min : consigne refusée (elle relancerait la chauffe), rien envoyé.',
+  ),
+  relaunched: (time) =>
+    both(
+      `Setpoint applied, but Huum started a new session, until ${time} UTC.`,
+      `Consigne appliquée, mais Huum a relancé une séance, jusqu’à ${time} UTC.`,
+    ),
   busy: both(
     'Another heating command is in progress: nothing sent.',
     'Une autre commande de chauffe est en cours : rien envoyé.',

@@ -39,7 +39,7 @@
 //   - the ack never waits for a publication to Gladys.
 // -----------------------------------------------------------------------------
 
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { DEVICE_TRANSPORTS, createLogger } from '@gladysassistant/integration-sdk';
 import { credentialsKey, normalizeConfig, refusedFingerprint, usable } from './config.js';
 import { FEATURES, PRESSED, SECOND, STATUS, TEMPERATURE, TIMINGS } from './constants.js';
@@ -115,6 +115,12 @@ export class HuumApp {
     this.protectSeq = 0;
     /** A turn off to reaffirm while a heating command may land after it. */
     this.stopGuard = undefined;
+    /** The temperature of the heating command sent without confirmation. */
+    this.unconfirmedTarget = undefined;
+    /** Stop requests in flight (every heating command waits for them). */
+    this.stopsInFlight = 0;
+    /** When the last turn off left (a setpoint waits 2 min after it). */
+    this.lastStopAt = -Infinity;
   }
 
   // --- Lifecycle -------------------------------------------------------------
@@ -126,6 +132,12 @@ export class HuumApp {
    */
   async start(raw = {}, { fresh = false } = {}) {
     this.stop();
+    // The guards belong to the account they were set for: another account
+    // never gets a turn off it did not ask for, nor confirms a start of the
+    // old one.
+    this.stopGuard = undefined;
+    this.unconfirmedStartUntil = -Infinity;
+    this.unconfirmedTarget = undefined;
     await this.sauna.running;
     const generation = this.generation;
     this.config = normalizeConfig(raw);
@@ -442,7 +454,53 @@ export class HuumApp {
     s.error = undefined;
     s.readAt = this.now();
     s.data = status;
+    this.rememberLastGood(status);
     this.observe(status, { fromCommand });
+  }
+
+  /** A salted fingerprint of the account, to tell whose last read /data keeps. */
+  goodKey(salt) {
+    return createHash('sha256')
+      .update(`huum-good\0${salt}\0${this.config.accountId ?? ''}`)
+      .digest('hex')
+      .slice(0, 32);
+  }
+
+  /**
+   * The summary of a good read, in memory; written to /data with the time of
+   * the next read (at most once a minute). After a restart it shows
+   * "connected" until the first read (2 h at most, same account only).
+   */
+  rememberLastGood(status) {
+    if (!this.config.accountId) {
+      return;
+    }
+    const previous = this.memory.lastGood;
+    const salt = previous?.salt ?? randomBytes(16).toString('hex');
+    if (!previous || previous.account !== this.goodKey(salt)) {
+      // The first good read of this account: written at the end of the read
+      // (the next ones go with the time of the next read, once a minute).
+      this.dirty = true;
+    }
+    this.memory.lastGood = {
+      salt,
+      account: this.goodKey(salt),
+      at: this.now(),
+      summary: T.summary(status),
+    };
+  }
+
+  /** The last good read kept in /data for this account, recent enough, else undefined. */
+  keptGood() {
+    const good = this.memory.lastGood;
+    if (
+      !good ||
+      good.account !== this.goodKey(good.salt) ||
+      this.now() - good.at >= TIMINGS.lastGoodMax
+    ) {
+      return undefined;
+    }
+    return good;
   }
 
   /** A failed read: the delay before the next one. */
@@ -518,6 +576,11 @@ export class HuumApp {
       return [false, T.unreachable(s.error ?? 'error', age(s.wait ?? this.interval))];
     }
     if (s.online === undefined || !s.data) {
+      const good = this.keptGood();
+      if (s.timer && good) {
+        // After a restart: the last good read kept in /data, until the next read.
+        return [true, join(T.connected(good.summary), T.lastRead(age(this.now() - good.at)))];
+      }
       return [false, s.timer ? T.waiting(age(Math.max(0, this.due - this.now()))) : T.connecting];
     }
     return [true, T.connected(T.summary(s.data))];
@@ -628,7 +691,7 @@ export class HuumApp {
       }
       const reachable =
         id === this.config.accountId &&
-        this.sauna.online === true &&
+        this.sauna.online !== false &&
         !this.blocked &&
         this.sauna.data?.code !== STATUS.OFFLINE;
       entries.push({
@@ -757,8 +820,15 @@ export class HuumApp {
     return this.heat(target.id, received, { setpoint: false });
   }
 
-  /** The checks of a heating command, on the latest configuration (on arrival, and right before sending). */
-  checkHeat(generation, id, entry) {
+  /**
+   * The checks of a heating command, on the latest configuration: on
+   * arrival, after the fresh read, and right before its first byte
+   * (beforeSend). A turn off in flight, or not confirmed yet (its guard),
+   * refuses every heating command; a setpoint is also refused for 2 min
+   * after a turn off when nothing was turned on since (a setpoint never
+   * turns the sauna on again).
+   */
+  checkHeat(generation, id, entry, order) {
     if (!this.config.allowHeating) {
       throw this.refusal(ERRORS.heatingDisabled);
     }
@@ -777,12 +847,22 @@ export class HuumApp {
     if (entry && entry.seq !== this.protectSeq) {
       throw this.refusal(ERRORS.stopMeanwhile);
     }
+    if (this.stopsInFlight > 0 || this.stopGuardActive()) {
+      throw this.refusal(ERRORS.stopPending);
+    }
+    if (
+      order?.setpoint &&
+      this.now() - this.lastStopAt < TIMINGS.setpointAfterStop &&
+      this.lastStartAt <= this.lastStopAt
+    ) {
+      throw this.refusal(ERRORS.justStopped);
+    }
   }
 
   /** Turn on, or a new setpoint: one at a time. */
   async heat(id, received, order) {
     const generation = this.generation;
-    this.checkHeat(generation, id);
+    this.checkHeat(generation, id, undefined, order);
     if (this.startEntry) {
       throw this.refusal(ERRORS.busy);
     }
@@ -821,7 +901,24 @@ export class HuumApp {
     this.publishAll().catch((err) => this.logger.warn(`Publishing failed: ${err.message}`));
   }
 
+  /**
+   * Nothing to send, as a read of less than 10 s shows it (a scene pressing
+   * in a loop never reads the cloud at each press). Deciding to SEND always
+   * takes a fresh read.
+   */
+  nothingToSend(order) {
+    const s = this.sauna;
+    if (!s.data || this.now() - s.readAt >= TIMINGS.recentRead || s.data.code !== STATUS.HEATING) {
+      return false;
+    }
+    return !order.setpoint || s.data.target === order.temperature;
+  }
+
   async sendHeat(id, received, generation, entry, order) {
+    if (this.nothingToSend(order)) {
+      this.checkHeat(generation, id, entry, order);
+      return undefined;
+    }
     const sendBy = received + TIMINGS.commandSendBy;
     const budget = Math.min(TIMINGS.commandReadMax, sendBy - TIMINGS.commandMinSend - this.now());
     if (budget < TIMINGS.commandMinRead) {
@@ -856,14 +953,22 @@ export class HuumApp {
       temperature = order.temperature;
       if (fresh.target === temperature) {
         // Already the setpoint read: nothing to send (a turn off meanwhile still refuses).
-        this.checkHeat(generation, id, entry);
-        return;
+        this.checkHeat(generation, id, entry, order);
+        return undefined;
+      }
+      // A setpoint is a start for Huum: near the end of the session it would
+      // start a whole new one.
+      if (fresh.endDate === undefined) {
+        throw this.refusal(ERRORS.missing);
+      }
+      if (fresh.endDate * 1000 - this.now() < TIMINGS.sessionEndMargin) {
+        throw this.refusal(ERRORS.sessionEnding);
       }
     } else {
       if (fresh.code === STATUS.HEATING) {
         // Already heating, as read: nothing sent (a turn off meanwhile still refuses).
-        this.checkHeat(generation, id, entry);
-        return;
+        this.checkHeat(generation, id, entry, order);
+        return undefined;
       }
       if (fresh.code !== STATUS.IDLE) {
         throw this.refusal(ERRORS.cannotStart(statusText(fresh.code)));
@@ -873,30 +978,42 @@ export class HuumApp {
     if (!fresh.doorClosed) {
       throw this.refusal(ERRORS.doorOpen);
     }
-    if (this.startMayLand) {
-      throw this.refusal(ERRORS.inProgress);
-    }
-    // The option may have been turned off, or a turn off pressed, during the read.
-    this.checkHeat(generation, id, entry);
-    if (temperature > this.config.maxTemperature) {
-      throw this.refusal(ERRORS.badSetpoint(TEMPERATURE.min, this.config.maxTemperature));
-    }
-    if (this.now() > sendBy) {
-      throw this.refusal(ERRORS.tooSlow);
-    }
+    // The checks again: right now, then right before the first byte.
+    const lastChecks = () => {
+      this.checkHeat(generation, id, entry, order);
+      if (this.startMayLand) {
+        throw this.refusal(ERRORS.inProgress);
+      }
+      if (temperature > this.config.maxTemperature) {
+        throw this.refusal(ERRORS.badSetpoint(TEMPERATURE.min, this.config.maxTemperature));
+      }
+      if (this.now() > sendBy) {
+        throw this.refusal(ERRORS.tooSlow);
+      }
+    };
+    lastChecks();
     const timeoutMs = Math.max(200, received + TIMINGS.commandAnswerBy - this.now());
     const previous = { sentAt: this.lastSentAt, startAt: this.lastStartAt };
-    this.lastSentAt = this.now();
-    this.lastStartAt = this.now();
-    entry.sentAt = this.now();
-    this.logger.info(`Huum: heat at ${temperature} °C`);
     let answer;
     try {
       answer = await this.client.start(this.config.auth, temperature, {
         startBy: sendBy,
         timeoutMs,
+        // beforeSend: the option, a turn off, the deadline, checked once
+        // connected; the start counts as sent from that moment only.
+        beforeSend: () => {
+          lastChecks();
+          this.lastSentAt = this.now();
+          this.lastStartAt = this.now();
+          entry.sentAt = this.now();
+          this.logger.info(`Huum: heat at ${temperature} °C`);
+        },
       });
     } catch (err) {
+      if (err instanceof Refusal) {
+        // Refused by the last checks: nothing written.
+        throw err;
+      }
       const reason = errorReason(err);
       this.logger.warn(`Huum: heating command failed (${reason})`);
       if (err.kind === ERROR_KINDS.LATE || err.kind === ERROR_KINDS.UNREACHABLE || err.notSent) {
@@ -917,19 +1034,40 @@ export class HuumApp {
         throw this.refusal(ERRORS.refused(reason));
       }
       // A 5xx, a silence, a broken answer: it may have reached Huum.
-      this.unconfirmedStartUntil = this.now() + TIMINGS.guard;
+      this.unconfirmed(temperature);
       this.followUp();
       throw this.refusal(ERRORS.sentUnconfirmed(reason));
     }
     this.showAnswer(answer, generation);
     this.followUp();
-    if (answer.code === STATUS.HEATING && answer.target === temperature) {
-      // Confirmed by the answer: heating at the temperature asked.
-      this.unconfirmedStartUntil = -Infinity;
-      return;
+    if (answer.code !== STATUS.HEATING || answer.target !== temperature) {
+      this.unconfirmed(temperature);
+      throw this.refusal(
+        ERRORS.sentUnconfirmed(ERRORS.answered(statusText(answer.code))[this.lang]),
+      );
     }
+    // Confirmed by the answer: heating at the temperature asked.
+    this.unconfirmedStartUntil = -Infinity;
+    this.unconfirmedTarget = undefined;
+    if (
+      order.setpoint &&
+      answer.endDate !== undefined &&
+      answer.endDate - fresh.endDate > TIMINGS.relaunchSlack / 1000
+    ) {
+      // Huum started a new session for the setpoint: said in the log and the ack data.
+      const message = ERRORS.relaunched(
+        new Date(answer.endDate * 1000).toISOString().slice(11, 16),
+      );
+      this.logger.warn(`Huum: ${message.en}`);
+      return { message: message[this.lang] };
+    }
+    return undefined;
+  }
+
+  /** A heating command that may land later: its guard, with the temperature asked. */
+  unconfirmed(temperature) {
     this.unconfirmedStartUntil = this.now() + TIMINGS.guard;
-    throw this.refusal(ERRORS.sentUnconfirmed(ERRORS.answered(statusText(answer.code))[this.lang]));
+    this.unconfirmedTarget = temperature;
   }
 
   /** A heating command may still land: in flight (sent, not answered), or sent without confirmation. */
@@ -947,9 +1085,49 @@ export class HuumApp {
     return Boolean(this.stopGuard);
   }
 
+  /** Keeps (or sets) the guard of a turn off sent at `sentAt`: the reads reaffirm it. */
+  guardStop(sentAt) {
+    if (!this.stopGuardActive()) {
+      this.stopGuard = {
+        sentAt,
+        until: this.now() + TIMINGS.guard,
+        reasserts: 0,
+        key: credentialsKey(this.config),
+      };
+    }
+  }
+
+  /**
+   * One stop request, counted while in flight (every heating command waits
+   * for it). `background`: a resend or a reaffirmation, whose 429 opens the
+   * pause like any other path.
+   */
+  sendStop(auth, { background = false } = {}) {
+    this.stopsInFlight += 1;
+    const sending = this.client.stop(auth, { timeoutMs: TIMINGS.protectTimeout });
+    sending
+      .finally(() => {
+        this.stopsInFlight -= 1;
+      })
+      .catch(() => {});
+    if (!background) {
+      return sending;
+    }
+    return sending.catch(async (err) => {
+      if (err.kind === ERROR_KINDS.RATE_LIMITED) {
+        await this.pause(err);
+        this.updateStatus().catch(() => {});
+      }
+      throw err;
+    });
+  }
+
   /**
    * TURN OFF: never held back, one request, no read before it (it decides
-   * nothing: it is always sent, never answered "already off").
+   * nothing: it is always sent, never answered "already off"). Confirmed
+   * only by an answer showing the sauna stopped (232, or 400 emergency stop);
+   * any turn off that may have left without that gets a guard: the reads of
+   * the next 2 min send it again (twice at most) if the sauna heats.
    */
   async turnOff(received) {
     // A heating command not sent yet gives way.
@@ -958,11 +1136,12 @@ export class HuumApp {
     const overtaken = this.startEntry;
     const sentAt = this.now();
     this.lastSentAt = sentAt;
+    this.lastStopAt = sentAt;
     if (this.startMayLand) {
-      this.stopGuard = { sentAt, until: sentAt + TIMINGS.guard, reasserts: 0 };
+      this.guardStop(sentAt);
     }
     this.logger.info('Huum: turn off');
-    const sending = this.client.stop(this.config.auth, { timeoutMs: TIMINGS.protectTimeout });
+    const sending = this.sendStop(this.config.auth);
     if (overtaken?.sentAt !== undefined && !overtaken.answered) {
       this.stopAgain(overtaken, sentAt);
     }
@@ -979,6 +1158,7 @@ export class HuumApp {
     this.followUp();
     if (outcome.late) {
       // Still going after the ack (bounded by its own timeout): shown and logged when it ends.
+      this.guardStop(sentAt);
       sending.then(
         (answer) => this.showAnswer(answer, generation),
         (err) => this.logger.warn(`Huum: turn off failed after the ack (${errorReason(err)})`),
@@ -1000,19 +1180,20 @@ export class HuumApp {
       if (err.kind === ERROR_KINDS.AUTH || (err.kind === ERROR_KINDS.HTTP && err.status < 500)) {
         throw this.refusal(ERRORS.refused(reason));
       }
+      // A silence, a 5xx, a broken answer: it may have reached Huum.
+      this.guardStop(sentAt);
       throw this.refusal(ERRORS.sentUnconfirmed(reason));
     }
     const answer = outcome.answer;
     this.showAnswer(answer, generation);
-    if (answer.code === STATUS.HEATING) {
-      // Still heating in the answer: the next reads send it again (twice at most).
-      if (!this.stopGuardActive()) {
-        this.stopGuard = { sentAt, until: this.now() + TIMINGS.guard, reasserts: 0 };
-      }
+    if (answer.code !== STATUS.IDLE && answer.code !== STATUS.EMERGENCY_STOP) {
+      // Heating, offline, locked, unknown: not confirmed; the reads send it again if it heats.
+      this.guardStop(sentAt);
       throw this.refusal(
         ERRORS.sentUnconfirmed(ERRORS.answered(statusText(answer.code))[this.lang]),
       );
     }
+    return undefined;
   }
 
   get lang() {
@@ -1034,28 +1215,52 @@ export class HuumApp {
         }
         this.logger.warn('Huum: turn off sent again after the heating command in flight');
         this.lastSentAt = this.now();
-        await this.client.stop(auth, { timeoutMs: TIMINGS.protectTimeout });
+        await this.sendStop(auth, { background: true });
       })
       .catch((err) => {
         this.logger.warn(`Huum: turn off again failed (${errorReason(err)})`);
-        if (!this.stopGuardActive()) {
-          this.stopGuard = { sentAt: stopAt, until: this.now() + TIMINGS.guard, reasserts: 0 };
+        if (credentialsKey(this.config) === credentialsKey({ auth })) {
+          this.guardStop(stopAt);
         }
         this.followUp();
       })
       .catch(() => {});
   }
 
-  /** A read through the guards: a heating command confirmed; a turn off reaffirmed if heating came back. */
+  /**
+   * A read through the guards: a heating command confirmed (heating at the
+   * temperature asked); a turn off confirmed (stopped, nothing in flight), or
+   * reaffirmed if heating came back (same account only).
+   */
   observe(status, { fromCommand = false } = {}) {
-    if (status.code === STATUS.HEATING && this.now() < this.unconfirmedStartUntil) {
-      // Heating: the command landed, it cannot land any more.
+    if (
+      status.code === STATUS.HEATING &&
+      this.now() < this.unconfirmedStartUntil &&
+      status.target === this.unconfirmedTarget
+    ) {
+      // Heating at the temperature asked: the command landed, it cannot land any more.
       this.unconfirmedStartUntil = -Infinity;
+      this.unconfirmedTarget = undefined;
     }
-    if (!this.stopGuardActive() || status.code !== STATUS.HEATING) {
+    if (!this.stopGuardActive()) {
       return;
     }
     const guard = this.stopGuard;
+    if (guard.key !== credentialsKey(this.config)) {
+      this.stopGuard = undefined;
+      return;
+    }
+    if (status.code !== STATUS.HEATING) {
+      if (
+        (status.code === STATUS.IDLE || status.code === STATUS.EMERGENCY_STOP) &&
+        this.stopsInFlight === 0 &&
+        !this.startMayLand
+      ) {
+        // Stopped, and nothing may land any more: the turn off is confirmed.
+        this.stopGuard = undefined;
+      }
+      return;
+    }
     const startInFlight = this.startEntry?.sentAt !== undefined && !this.startEntry.answered;
     if (
       !fromCommand &&
@@ -1066,8 +1271,7 @@ export class HuumApp {
       guard.reasserts += 1;
       this.logger.warn('Huum: the sauna heats again after a turn off, turn off sent again');
       this.lastSentAt = this.now();
-      this.client
-        .stop(this.config.auth, { timeoutMs: TIMINGS.protectTimeout })
+      this.sendStop(this.config.auth, { background: true })
         .then(() => this.followUp())
         .catch((err) => this.logger.warn(`Huum: turn off reaffirmed failed (${errorReason(err)})`));
     }

@@ -53,23 +53,32 @@ device; the old one is shown unreachable.
 - **Turn off** always works: even with heating from Gladys off, during a
   pause asked by Huum, after refused credentials, or right after a restart,
   before the first read. It is always sent (never "already off"), cancels a
-  heating command not sent yet, is sent again after a heating command still on
-  its way, and reaffirmed (twice at most) if the sauna heats again within two
-  minutes.
+  heating command not sent yet, and is sent again after a heating command
+  still on its way. It is confirmed only when Huum's answer shows the sauna
+  "online, not heating" or in "emergency stop"; otherwise (no answer, an
+  error, offline, locked, unknown, still heating): "Sent, without
+  confirmation", and for two minutes every read that sees the sauna heating
+  sends it again (twice at most). This may also turn off a heating started
+  from the Huum app within those two minutes: that is intended.
 - **Turn on (heat)** and the **setpoint** are refused while "Allow heating
   from Gladys" is off. On, they read the sauna first (never the state in
   memory) and refuse when the door is open or unknown, when the sauna cannot
   heat (offline, locked by another account, emergency stop, unknown status),
-  when a turn off was asked meanwhile, or when the command cannot leave within
-  3.5 s. One at a time, never sent twice.
+  when a turn off is in flight or not confirmed yet, or when the command
+  cannot leave within 3.5 s. The option and the turn off are checked again at
+  the very moment the command is written: turning the option off or pressing
+  Turn off while it connects cancels it. One at a time, never sent twice.
 - **Turn on** asks for the setpoint of the "Turn on" button, never above the
   highest setpoint. Already heating: nothing is sent.
 - **The setpoint** is only changed while heating (Huum takes a new setpoint as
-  a new start). A whole number from 40 °C to the highest setpoint.
-- A command is confirmed only when Huum's answer shows the sauna heating at
-  the temperature asked (or not heating, for a turn off). Otherwise: "Sent,
-  without confirmation", and the integration reads the sauna again 10 s and
-  40 s later.
+  a new start). A whole number from 40 °C to the highest setpoint. It is
+  refused when the end of the session is unknown or less than 2 min away (it
+  would start heating again), and for 2 min after a turn off. If Huum starts a
+  new session anyway, the log says so ("new session, until HH:MM UTC").
+- Turn on and the setpoint are confirmed only when Huum's answer shows the
+  sauna heating at the temperature asked. Otherwise: "Sent, without
+  confirmation", and the integration reads the sauna again 10 s and 40 s
+  later.
 
 ## When something goes wrong
 
@@ -96,7 +105,10 @@ device; the old one is shown unreachable.
 
 `/data/huum-state.json` holds only: the end of a pause, the stop on refused
 credentials (with the salted fingerprint of those credentials), the time of
-the last read. Neither the e-mail address nor the password.
+the last read, and the summary of the last good read ("Heating, 72 °C", with
+a salted fingerprint of the account): after a restart the integration shows
+connected until the first read (2 h at most). Neither the e-mail address nor
+the password.
 
 Based on the huum Python library (MIT, frwickst/pyhuum), ported to
 JavaScript: see `THIRD_PARTY_NOTICES.md`.

@@ -7,7 +7,10 @@
 //     them again (only new credentials, or a success of the test button, lift
 //     it);
 //   - the time of the last read (written at most once a minute, BEFORE the
-//     read), so a restart never reads sooner than the interval.
+//     read), so a restart never reads sooner than the interval;
+//   - the summary of the last good read ("Heating, 72 °C") with a salted
+//     fingerprint of the account, so a restart shows "connected" until the
+//     first read (2 h at most).
 // NO SECRET: neither the e-mail address nor the password. The only thing
 // derived from credentials is the salted fingerprint of credentials Huum
 // REFUSED (src/config.js), erased at the first accepted read. The file is
@@ -63,16 +66,25 @@ export function memoryStore(initial = null) {
 const object = (value) =>
   value && typeof value === 'object' && !Array.isArray(value) ? value : {};
 const HEX = /^[0-9a-f]{32,64}$/;
+/** A text read back from /data: bounded, without control characters, else undefined. */
+const cleanText = (value) =>
+  // eslint-disable-next-line no-control-regex
+  typeof value === 'string' && value.length <= 300 && !/[\u0000-\u001f\u007f]/.test(value)
+    ? value
+    : undefined;
 
 /**
  * The persisted state, repaired and bounded:
  * `{ pause: { until, reason } | null, block: { salt, refused, status } | null,
+ *   lastGood: { salt, account, at, summary: { en, fr } } | null,
  *   lastAttemptAt: number | null }`.
  */
 export function normalizeMemory(raw, now) {
   const data = object(raw);
   const pause = object(data.pause);
   const block = object(data.block);
+  const good = object(data.lastGood);
+  const summary = object(good.summary);
   return {
     pause:
       Number.isFinite(pause.until) && pause.until > now
@@ -89,6 +101,22 @@ export function normalizeMemory(raw, now) {
             refused:
               typeof block.refused === 'string' && HEX.test(block.refused) ? block.refused : null,
             status: block.status === 403 ? 403 : 401,
+          }
+        : null,
+    // The summary of the last good read, with a salted fingerprint of the account (no e-mail).
+    lastGood:
+      typeof good.salt === 'string' &&
+      HEX.test(good.salt) &&
+      typeof good.account === 'string' &&
+      /^[0-9a-f]{32}$/.test(good.account) &&
+      Number.isFinite(good.at) &&
+      cleanText(summary.en) &&
+      cleanText(summary.fr)
+        ? {
+            salt: good.salt,
+            account: good.account,
+            at: Math.min(good.at, now),
+            summary: { en: cleanText(summary.en), fr: cleanText(summary.fr) },
           }
         : null,
     // A time in the future (a clock set back) counts as now: never a longer wait than the interval.

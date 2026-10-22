@@ -24,8 +24,26 @@ up to date at the end of every milestone.
       stop on refused credentials persisted; test button; docs en/fr; cover.
       Tested against made-up answers only. The store validator was not run by
       the dev session (it needs the real terminal).
+- [x] **Review 1 fixes** (2026-10-22), tests in `test/review1.test.js` and
+      `test/tls.test.js`:
+      B1 `agent: false` removed from `src/huum/http.js` (Node ignored
+      createConnection and sent the request, Basic included, in clear on a
+      second TCP connection); real local TLS server test (one connection,
+      nothing in clear). I1 no heating command while a turn off is in flight
+      or unconfirmed; setpoint refused 2 min after a turn off. I2 setpoint
+      refused without `endDate` or within 2 min of it; a new session logged.
+      I3 an unconfirmed start is cleared only at the temperature asked. I4 a
+      guard for every turn off that may have left unconfirmed. I5 turn off
+      confirmed only by 232 or 400. I6 `beforeSend`: option, turn off and
+      deadline checked when the start is written. M1 guards reset when the
+      account changes (and bound to it). M2 last good read in /data (salted
+      account fingerprint), "connected" after a restart. M3 a 429 on a resent
+      or reaffirmed turn off opens the pause. M4 "nothing to send" decided on
+      a read of less than 10 s.
 - [ ] **Milestone 2 — real sauna**: run against a real Huum account (see "To
-      check"), turn the answers (anonymized) into fixtures.
+      check"), turn the answers (anonymized) into fixtures. Decide what a 403
+      means (review 1): if Huum uses it for "locked by another account", it
+      must not be a final stop.
 - [ ] **Milestone 3 — more**: light/fan toggle (`GET /action/home/light`, a
       toggle: needs a guard set before the first byte, kept in /data, and a
       state read back), steamer humidity (`humidity` with the UKU 4.2 limits
@@ -55,6 +73,11 @@ up to date at the end of every milestone.
   Wickström), frwickst/pyhuum, cloned read only in `_ref/huum-ref`. Credited
   in `THIRD_PARTY_NOTICES.md`, copied into the image. No application key nor
   app User-Agent in the library: none here either (`gladys-huum`).
+- **Guards in memory only** (as gladys-robonect): the turn off guard and the
+  unconfirmed start are lost if the container restarts within their 2 min.
+- **Reaffirmation**: within 2 min of an unconfirmed turn off, a read that sees
+  the sauna heat sends it again, even if the heating was started from the
+  Huum app meanwhile: protective, said in the docs.
 - **Neighbours followed**: LM1LC3N7/gladys-edilkamin (flame appliance: lighting
   off by default, two buttons, setpoint behind the option) and
   LM1LC3N7/gladys-robonect (lot 12 rules: attempt time in /data before the

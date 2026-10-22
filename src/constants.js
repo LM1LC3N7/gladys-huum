@@ -128,4 +128,14 @@ export const TIMINGS = {
   guard: 2 * MINUTE,
   /** A turn off sent again at most this often while a heating may still land after it. */
   stopReasserts: 2,
+  /** A setpoint is refused this long after a turn off (nothing turned on since). */
+  setpointAfterStop: 2 * MINUTE,
+  /** A setpoint is refused when the session ends sooner than this (it would start a new one). */
+  sessionEndMargin: 2 * MINUTE,
+  /** A planned end moved later by more than this after a setpoint: a new session. */
+  relaunchSlack: MINUTE,
+  /** "Nothing to send" may be decided on a read this recent (never a decision to send). */
+  recentRead: 10 * SECOND,
+  /** After a restart, the last good read kept in /data shows "connected" while waiting. */
+  lastGoodMax: 2 * HOUR,
 };

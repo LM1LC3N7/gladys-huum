@@ -1,61 +1,102 @@
-# Demo Devices Template
+# Huum for Gladys
 
-This is the user documentation of the integration. Gladys re-hosts this file
-and shows a permanent **Documentation** link to it in the Configuration screen
-(in the user's language, with English as the fallback) — it is when
-configuring that the user needs it most. Keep the short onboarding hints in
-the `section` blocks of the manifest `config_schema`; put the long
-step-by-step (screenshots, troubleshooting…) here.
+This integration shows a **Huum sauna heater with its UKU Wi-Fi controller**
+in Gladys, through the Huum cloud (the account of the Huum app). **Never
+tested with a real device.** Not affiliated with Huum.
+
+> **Safety.** A sauna gets very hot. Never start heating from afar without
+> making sure nobody is inside and nothing lies on the stove. Turning on from
+> Gladys is **off by default** and refused while the door is open; turning off
+> always works.
 
 ## What you get
 
-Six demo devices show up after installation: a weather station (real data
-from Open-Meteo), a switch, a dimmable light, a smart plug with power
-metering, a motion sensor and a camera.
+A sauna in the Discovery tab, with:
 
-## Configuration
+- **Heating** (yes/no, read only) and the **status** as text ("Heating",
+  "Online, not heating", "Offline", "In use by another user (locked)",
+  "Emergency stop"), the status code, controller online;
+- **door** (opening sensor: open/closed);
+- measured **temperature** and **setpoint**;
+- **heating time left** (minutes), from the end of the session planned by
+  Huum;
+- the **light** (read only), when your sauna reports one;
+- two buttons: **Turn on (heat)** and **Turn off**.
 
-1. Open the **Configuration** tab of the integration.
-2. Set the **latitude** and **longitude** the demo weather station should
-   observe (they default to Paris), and pick your temperature unit.
-   The **refresh interval** sets how often the weather station and the
-   plug's power are read: every 5 minutes by default, every minute at most.
-3. Save: the devices appear in the **Discovery** tab, ready to be added.
+No switch: an "everything on" from Google Home, Alexa, HomeKit, MCP or a scene
+can never start the sauna.
 
-The **Prefer the local connection** toggle drives the demo plug: it reports
-the channel it actually uses as a badge (local or cloud), with an orange dot
-when it runs degraded (local refused, cloud fallback).
+## Setup
 
-## Actions
+1. In Gladys, open the Huum integration and enter the **e-mail address** and
+   the **password** of your Huum account (those of the app).
+2. Save, then add the sauna from the **Discovery** tab.
+3. To start heating from Gladys, turn on **Allow heating from Gladys**, and
+   set the **setpoint of the "Turn on" button** (80 °C by default) and the
+   **highest setpoint** (90 °C by default, 110 °C at most, the limit of the
+   controller).
 
-- **Test the weather provider** — performs a live request to Open-Meteo and
-  shows the current temperature and humidity under the button.
-- **Identify a device** — pick one of your devices in the list and it will
-  signal itself (the demo light "blinks" in the logs).
+The password is kept by Gladys in its database, never shown again, sent only
+to the Huum cloud (sauna.huum.eu, over HTTPS, HTTP Basic authentication). It
+is never written to the logs nor to `/data`.
 
-## Scenes
+The sauna is read every 60 s (60 s to 1 h), **never more often**, even after
+a restart of the integration, a reconnection to Gladys, the "Test the
+connection" button or a Discovery scan.
 
-The integration adds its own cards to the scene editor (Gladys 5.1 or
-later), under the **Integrations** category:
+The device belongs to the Huum **account**: the API gives the sauna no id of
+its own (one account, one sauna). Another e-mail address therefore makes a new
+device; the old one is shown unreachable.
 
-- **Motion detected** (trigger) — starts the scene when a demo motion sensor
-  sees something move. Optionally pick the sensor and what moved (person,
-  animal); left empty, any detection matches. The following actions can
-  read what moved with `{{triggerEvent.data.target}}`.
-- **Identify a device** (action) — makes the chosen device signal itself.
-  It returns whether the device could signal itself, so the following
-  actions can depend on it.
+## The commands
 
-## Dashboard
+- **Turn off** always works: even with heating from Gladys off, during a
+  pause asked by Huum, after refused credentials, or right after a restart,
+  before the first read. It is always sent (never "already off"), cancels a
+  heating command not sent yet, is sent again after a heating command still on
+  its way, and reaffirmed (twice at most) if the sauna heats again within two
+  minutes.
+- **Turn on (heat)** and the **setpoint** are refused while "Allow heating
+  from Gladys" is off. On, they read the sauna first (never the state in
+  memory) and refuse when the door is open or unknown, when the sauna cannot
+  heat (offline, locked by another account, emergency stop, unknown status),
+  when a turn off was asked meanwhile, or when the command cannot leave within
+  3.5 s. One at a time, never sent twice.
+- **Turn on** asks for the setpoint of the "Turn on" button, never above the
+  highest setpoint. Already heating: nothing is sent.
+- **The setpoint** is only changed while heating (Huum takes a new setpoint as
+  a new start). A whole number from 40 °C to the highest setpoint.
+- A command is confirmed only when Huum's answer shows the sauna heating at
+  the temperature asked (or not heating, for a turn off). Otherwise: "Sent,
+  without confirmation", and the integration reads the sauna again 10 s and
+  40 s later.
 
-Add the **Demo status** widget to a dashboard: it shows the live
-temperature of the weather station and the power of the office plug, the
-connection the plug currently uses (orange when degraded) and the observed
-location. Its **Identify the light** button makes the demo light signal
-itself.
+## When something goes wrong
 
-## Troubleshooting
+- **Credentials refused** (HTTP 401 or 403): the integration stops and
+  **never** tries them again by itself (no loop). Fix them and save, or, if
+  they are right, use "Test the connection": the button makes one read, and
+  the stop is lifted only if it succeeds. The stop survives a restart; only a
+  salted fingerprint of the refused credentials is kept in `/data`, erased at
+  the first success.
+- **429** (Huum asks to slow down): a pause of 1 min to 6 h (Retry-After),
+  kept in `/data`. **5xx**: a pause kept in `/data`. Network error: new tries
+  after 1, 2, 5 then 15 min, never faster than the interval.
+- A heating command refused by Huum (401, 403) never stops the reads.
 
-The integration logs everything it does: check the integration logs from the
-Gladys UI (or `docker logs` on the host) with `LOG_LEVEL=debug` for the full
-detail.
+## Limits
+
+- The API is not publicly documented (Huum gave it to the authors of the
+  pyhuum library). It may change.
+- No light command yet (a toggle: to do with a guard), no humidity (steamer),
+  no session timer.
+- One sauna per account.
+
+## Data
+
+`/data/huum-state.json` holds only: the end of a pause, the stop on refused
+credentials (with the salted fingerprint of those credentials), the time of
+the last read. Neither the e-mail address nor the password.
+
+Based on the huum Python library (MIT, frwickst/pyhuum), ported to
+JavaScript: see `THIRD_PARTY_NOTICES.md`.

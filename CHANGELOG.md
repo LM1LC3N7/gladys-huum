@@ -10,6 +10,8 @@ the notes of the version's GitHub Release.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-22
+
 ### Added
 
 - Huum sauna heaters (UKU Wi-Fi controller) through the Huum cloud, with the
@@ -37,3 +39,6 @@ the notes of the version's GitHub Release.
 - Requests over HTTPS on one TLS connection, tested against a real local
   TLS server.
 - "Test the connection" button; documentation in English and French.
+
+[Unreleased]: https://github.com/LM1LC3N7/gladys-huum/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/LM1LC3N7/gladys-huum/releases/tag/v0.1.1

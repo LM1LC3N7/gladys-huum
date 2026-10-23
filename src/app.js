@@ -1054,12 +1054,12 @@ export class HuumApp {
       answer.endDate !== undefined &&
       answer.endDate - fresh.endDate > TIMINGS.relaunchSlack / 1000
     ) {
-      // Huum started a new session for the setpoint: said in the log and the ack data.
+      // Huum started a new session for the setpoint: said in the log only (the
+      // SDK ignores what setValue returns; the ack is a plain success).
       const message = ERRORS.relaunched(
         new Date(answer.endDate * 1000).toISOString().slice(11, 16),
       );
       this.logger.warn(`Huum: ${message.en}`);
-      return { message: message[this.lang] };
     }
     return undefined;
   }

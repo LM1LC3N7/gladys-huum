@@ -10,6 +10,12 @@ the notes of the version's GitHub Release.
 
 ## [Unreleased]
 
+### Fixed
+
+- Code clean-up: a setpoint that makes Huum start a new session is reported
+  in the log only (as documented); a return value the SDK never used is
+  removed. No change of behaviour.
+
 ## [0.1.1] - 2026-10-22
 
 ### Added
